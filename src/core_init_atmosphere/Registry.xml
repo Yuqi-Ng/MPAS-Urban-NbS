@@ -225,6 +225,11 @@
                      units="-"
                      description="Whether to process, read, and write static fields only required by urban physics"
                      possible_values="true or false"/>
+		
+		<nml_option name="config_slucm_distributed_drag" type="logical" default_value="false" in_defaults="true"
+                     units="-"
+                     description="Whether to use spatially distributed surface drag data for SLUCM"
+	             possible_values="true or false"/>
 
                 <nml_option name="config_use_spechumd"          type="logical"       default_value="false"
                      units="-"

@@ -535,9 +535,9 @@
 !local variables:
  integer:: iCell, isurban_beg
  character(len=StrKIND),pointer:: mminlu
- integer, pointer:: nCellsSolve,config_urban_use_lcz
- integer, pointer:: config_urban_physics,isurban_lu
- logical, pointer:: config_slucm_distributed_drag
+ integer, pointer:: nCellsSolve
+ integer, pointer:: isurban_lu
+ logical, pointer:: config_slucm_distributed_drag,config_urban_static
  integer, dimension(:),pointer:: ivgtyp
  real(kind=RKIND),dimension(:),pointer:: frc_urb2d,lp_urb2d,lb_urb2d,hgt_urb2d
  real(kind=RKIND),dimension(:),pointer:: mh_urb2d,stdh_urb2d
@@ -545,11 +545,10 @@
 
 !-----------------------------------------------------------------------------------------------------------------
 
- call mpas_pool_get_config(configs,'config_urban_physics',config_urban_physics)
+ call mpas_pool_get_config(configs,'config_urban_static',config_urban_static)
 
- if (config_urban_physics > 0) then
+ if (config_urban_static) then
 
- call mpas_pool_get_config(configs,'config_urban_use_lcz',config_urban_use_lcz)
  call mpas_pool_get_config(configs,'config_slucm_distributed_drag',config_slucm_distributed_drag)
  call mpas_pool_get_dimension(dims, 'nCellsSolve', nCellsSolve)
  call mpas_pool_get_array(mesh,'isurban_lu',isurban_lu)
@@ -567,14 +566,14 @@
 
  !Split WUDAPT/NUDAPT Urban Parameters
  isurban_beg = 50   ! LCZ number starts from 51 to 61
- if ((config_urban_physics == 1) .and. config_slucm_distributed_drag) then
+ if (config_urban_static .and. config_slucm_distributed_drag) then
     do iCell = 1, nCellsSolve
        if ((ivgtyp(iCell) == isurban_lu) .or. (ivgtyp(iCell) > isurban_beg)) then
           frc_urb2d(iCell) = max(0.1,min(0.9,1.0 - sum(greenfrac(:,iCell))/12.0/100.0))
        endif
     enddo 
  else
-    if (config_urban_physics > 0) then
+    if (config_urban_static) then
        do iCell = 1, nCellsSolve
           if ((mminlu == 'NLCD40') .or. (mminlu == 'MODIFIED_IGBP_MODIS_NOAH')) then
              if ((frc_urb2d(iCell)>=0.5) .and. &
@@ -602,9 +601,9 @@
           lb_urb2d(iCell)  = urb_param(95,iCell)
           hgt_urb2d(iCell) = urb_param(94,iCell)
        enddo
-    endif  ! config_urban_physics > 0
+    endif  ! config_urban_static
 
-    if (config_urban_physics == 1) then
+    if (config_urban_static) then
        do iCell = 1, nCellsSolve
           mh_urb2d(iCell)   = urb_param(92,iCell)
           stdh_urb2d(iCell) = urb_param(93,iCell)
@@ -617,7 +616,7 @@
 
  endif ! split URB_PARAM matrix
 
- endif !config_urban_physics > 0
+ endif !config_urban_static
 
  end subroutine init_urban_param
 
