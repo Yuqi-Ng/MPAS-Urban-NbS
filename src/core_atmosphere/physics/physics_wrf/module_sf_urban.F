@@ -131,6 +131,11 @@ USE mpas_kind_types
 
    CHARACTER (LEN=256) , PRIVATE   :: mesg
 
+!===Safeguards for the SLUCM surface-temperature Newton solvers (GitHub issue #2380)===
+   REAL(kind=RKIND), PARAMETER :: URB_TS_MIN  = 223.15  ! lower bound for solved surface temperatures [K]
+   REAL(kind=RKIND), PARAMETER :: URB_TS_MAX  = 353.15  ! upper bound for solved surface temperatures [K]
+   REAL(kind=RKIND), PARAMETER :: URB_DTS_MAX = 5.0     ! max. |Newton correction| per iteration      [K]
+
    CONTAINS
 
 !===============================================================================
@@ -685,6 +690,8 @@ USE mpas_kind_types
    REAL(kind=RKIND) :: TSP, CHS_LOCAL, CHS2_LOCAL
 
    REAL(kind=RKIND) :: WDR,HGT2,BW,DHGT
+   REAL(kind=RKIND) :: L_TBL, L_NUD, TREE_FIT   ! urban-nbs: canyon length scales [m] and tree shrink factor (NUDAPT)
+   REAL(kind=RKIND) :: CTS                      ! urban-nbs: leaf heat-storage coefficient (TTscheme=0), same units as ALPHAC
    REAL(kind=RKIND), parameter :: VonK = 0.4
    REAL(kind=RKIND) :: lambda_f,alpha_macd,beta_macd,lambda_fr
    REAL(kind=RKIND) :: lambda_p, vegfrac
@@ -825,11 +832,30 @@ USE mpas_kind_types
  end if
  
  !Assign NUDAPT Parameters
+   L_TBL = RW_M / RW        ! urban-nbs: table canyon length ROAD_WIDTH+ROOF_WIDTH [m] (RW is still the table value here)
    ZR = mh_urb
     R = lp_urb
     RW = 1.0-R
    HGT = mh_urb/(BW+SW)
    SIGMA_ZED = stdh_urb
+
+   ! urban-nbs: the tree sizes in URBPARM.TBL are normalized by the table canyon length. With NUDAPT
+   ! they are re-normalized by the NUDAPT length (BW+SW), keeping their size in meters, and the crown
+   ! is shrunk (HTREE/RTREE ratio kept) where it would not fit inside the NUDAPT canyon:
+   ! HTREE+RTREE <= HGT (building height) and 2*RTREE <= RW (street width). The tree stays centered.
+   IF (TREEOPTION == 1) THEN
+     L_NUD = BW + SW
+     RTREE = RTREE * L_TBL / L_NUD
+     HTREE = HTREE * L_TBL / L_NUD
+     TREE_FIT = 1.0
+     IF (HTREE + RTREE > 0.98 * HGT) TREE_FIT = MIN(TREE_FIT, 0.98 * HGT / (HTREE + RTREE))
+     IF (2. * RTREE    > 0.98 * RW ) TREE_FIT = MIN(TREE_FIT, 0.98 * RW / (2. * RTREE))
+     RTREE   = RTREE * TREE_FIT
+     HTREE   = HTREE * TREE_FIT
+     DTREE   = 0.5 * RW
+     RTREE_M = RTREE * L_NUD   ! crown radius [m]
+     RW_M    = RW * L_NUD      ! street width [m], consistent with the normalized RW
+   END IF
 
  !Calculate Wind Direction and Assign Appropriae lf_urb
    WDR = (180.0/PI)*ATAN2(U10,V10)
@@ -1054,6 +1080,12 @@ USE mpas_kind_types
       CALL VF_TREE_ANALYTICAL(RW, HGT, HTREE, RTREE, TAU, VFGS_TREE, VFGW_TREE, VFGT_TREE, VFWS_TREE, VFWG_TREE, VFWW_TREE, VFWT_TREE, VFTS_TREE, VFTG_TREE, VFTW_TREE)
    END IF
    
+   ! urban-nbs bugfix: SLEAF/SVG1/SVG2 are only set in the daytime tree branch;
+   ! zero them so nighttime (and TREEOPTION/=1) code never uses undefined values
+   SLEAF = 0.0
+   SVG1  = 0.0
+   SVG2  = 0.0
+   
    IF (SSG > 0.0) THEN
 
      IF(SHADOW) THEN              ! shadow effects, calculate SLX
@@ -1160,7 +1192,7 @@ USE mpas_kind_types
              (SDT + SQ * VFTS_TREE) * ALBT * VFGT_TREE * (1 - ALBVG)
        ST1 = (SDT + SQ * VFTS_TREE) * (1- ALBT)
        ST2 = 2. * (SDB + SQ * VFWS_TREE) * ALBB * VFTW_TREE *(1 - ALBT) + &
-             (SDG + SQ * VFGS_TREE) * ALBG * VFTG_TREE * (1 - ALBT)    
+             (SDG + SQ * VFGS_TREE) * ALBGE * VFTG_TREE * (1 - ALBT)
      END IF
 
      SR=SR1    ! units: [cal/cm2/s]
@@ -1302,9 +1334,9 @@ USE mpas_kind_types
        DG0RDTR =  2.*AKSR/DZR(1)
 
        DFDT = DRRDTR - DHRDTR - DELERDTR - DG0RDTR 
-       DTR = F/DFDT
+       DTR = URB_LIMIT_DT(F/DFDT)          ! bounded, NaN-safe Newton step (#2380)
 
-       TR = TRP - DTR
+       TR = URB_CLAMP_TS(TRP - DTR)
        TRP = TR
 
        IF( ABS(F) < 0.000001 .AND. ABS(DTR) < 0.000001 ) EXIT
@@ -1379,6 +1411,7 @@ USE mpas_kind_types
        EDIR=0.0
        ECR =0.0
        ETTR=0.0
+       ETR =0.0   ! bugfix: per-layer transpiration was left undefined for SMFLX in the dew branch
        CALL SMFLX (SMRP,SMR,NGR,CMCRP,CMCR,DELT,RAINDR,ZSOILR,SMCMAX,BEXP,SMCWLT,SROOT,DKSAT,&
                    DWSAT,SHDFAC,CMCMAX,RUNOFF1,RUNOFF2,RUNOFF3,EDIR,ECR,ETR,DRIP)  
        END IF
@@ -1424,8 +1457,8 @@ USE mpas_kind_types
        DELERDTGR = RHO*EL*CHGR*UA*BETGR*DQS0GRDTGR*100.
        DG0RDTGR  = 2.*DF1/ DZGR(KZ) * ( 1.0 / 4.1868 ) * 1.E-4
        DFDVT = DRRDTGR - DHRDTGR - DELERDTGR - DG0RDTGR        
-       DTGR = FV/DFDVT/ 6
-       TGR  = TGRP - DTGR
+       DTGR = URB_LIMIT_DT(FV/DFDVT/ 6)    ! bounded, NaN-safe Newton step (#2380)
+       TGR  = URB_CLAMP_TS(TGRP - DTGR)
        TGRP = TGR
 
        IF( ABS(FV) < 0.0001 .AND. ABS(DTGR) < 0.001 ) then
@@ -1648,9 +1681,11 @@ ENDIF
 
        DTB =  (GF*FY-F*GY)/(FX*GY-GX*FY)
        DTG = -(GF+GX*DTB)/GY
+       DTB = URB_LIMIT_DT(DTB)             ! bounded, NaN-safe Newton step (#2380)
+       DTG = URB_LIMIT_DT(DTG)
        
-       TB = TBP + DTB
-       TG = TGP + DTG
+       TB = URB_CLAMP_TS(TBP + DTB)
+       TG = URB_CLAMP_TS(TGP + DTG)
 
        TBP = TB
        TGP = TG
@@ -1661,6 +1696,12 @@ ENDIF
          TC1=RW*ALPHAC+RW*ALPHAG+W*ALPHAB
          TC2=RW*ALPHAC*TA+RW*ALPHAG*TGP+W*ALPHAB*TBP
          TC=TC2/TC1
+
+         ! QC must use QS0B/QS0G at the updated TBP/TGP, as the Jacobian assumes
+         ES=6.11*EXP( (2.5*10.**6./461.51)*(TBP-273.15)/(273.15*TBP) )
+         QS0B=0.622*ES/(PS-0.378*ES)
+         ES=6.11*EXP( (2.5*10.**6./461.51)*(TGP-273.15)/(273.15*TGP) )
+         QS0G=0.622*ES/(PS-0.378*ES)
 
          QC1=RW*ALPHAC+RW*ALPHAG*BETG+W*ALPHAB*BETB
          QC2=RW*ALPHAC*QA+RW*ALPHAG*BETG*QS0G+W*ALPHAB*BETB*QS0B
@@ -1839,6 +1880,7 @@ ENDIF
             EDIRG=0.0     
             ECG =0.0
             ETTG=0.0
+            ETG =0.0   ! urban-nbs bugfix: per-layer transpiration was left undefined for SMFLX in the dew branch
             CALL SMFLX (SMGP,SMG,NVG,CMCGP,CMCG,DELT,RAINDR,ZSOILG,SMCMAX,BEXP,SMCWLT,SROOTP,DKSAT, &
                         DWSAT,VFAC,CMCMAX,SRUN1,SRUN2,SRUN3,EDIRG,ECG,ETG,DRIPG)  
          END IF
@@ -2102,9 +2144,9 @@ ENDIF
          DTB = DTB * relax
          DTG = DTG * relax
          DTVG = DTVG * relax
-         DTB = SIGN(MIN(ABS(DTB), max_step), DTB)
-         DTG = SIGN(MIN(ABS(DTG), max_step), DTG)
-         DTVG = SIGN(MIN(ABS(DTVG), max_step), DTVG)
+         DTB  = URB_LIMIT_DT(DTB)          ! NaN-safe (SIGN(MIN(...)) with NaN is compiler dependent) (#2380)
+         DTG  = URB_LIMIT_DT(DTG)
+         DTVG = URB_LIMIT_DT(DTVG)
          
 
          TB = TBP + DTB
@@ -2124,8 +2166,17 @@ ENDIF
 
          TC1 = RW * ALPHAC + RW * FVG * ALPHAVG + RW * (1 - FVG) * ALPHAG + W * ALPHAB
          TC2 = RW * ALPHAC * TA + RW * FVG * ALPHAVG * TVGP + RW * (1 - FVG) * ALPHAG * TGP + W * ALPHAB * TBP + 2 * RTREE * LAI_TREE * (HT/100)
+         IF (TTscheme .eq. 0) THEN
+            ! urban-nbs bugfix: with TT = TC, the leaf heat-storage term of HT, -640*(TT-TTP)/DELT, was
+            ! iterated explicitly (TT from the previous iteration). Its gain ~1/DELT makes the TC iteration
+            ! diverge for short time steps (e.g., DELT = 6 s); treat it implicitly in TC instead.
+            CTS = 2 * RTREE * LAI_TREE * 640. / DELT / (697.7 * 60.) / 100.
+            TC1 = TC1 + CTS
+            TC2 = TC2 + CTS * TT
+         END IF
          TC = TC2 / TC1
          TC = MAX(223.15, MIN(353.15, TC))
+         DTC = TCP - TC                    ! urban-nbs bugfix: change in TC must be taken before TCP is updated
          TCP = TC                          ! update TCP  (urban-nbs)
 		 
 		   ! Chenghao: HT unit is cgs, keep it as is [RHO - g/cm3, CP - cal/g/K]
@@ -2156,7 +2207,6 @@ ENDIF
             TT = TTP + 0.1 * (TC - TTP)
          ENDIF	
 
-         DTC = TCP - TC
          QCP = QC
 
 
@@ -2302,10 +2352,19 @@ ENDIF
    FLXHUMB=ELEB/RHO/EL/100. ! ELEB is cgs unit, final unit m/s
    FLXTHG=HG/RHO/CP/100.
    FLXHUMG=ELEG/RHO/EL/100. ! ELEG is cgs unit, final unit m/s
+   ! urban-nbs bugfix: HVG, ELEVG, HT and ELET are only defined in the tree branch; previously these
+   ! were evaluated (and FLXHUMVG/FLXHUMT stored as state) from undefined values when TREEOPTION /= 1
+   IF (TREEOPTION == 1) THEN
    FLXTHVG=HVG/RHO/CP/100.    ! ADD IN urban-nbs
    FLXHUMVG=ELEVG/RHO/EL/100. ! ELEVG is cgs unit, final unit m/s
    FLXTHT=HT/RHO/CP/100.      
    FLXHUMT=ELET*(1/697.7/60.)/RHO/EL/100.  ! ELET is W/m2, final unit m/s
+   ELSE
+   FLXTHVG  = 0.
+   FLXHUMVG = 0.
+   FLXTHT   = 0.
+   FLXHUMT  = 0.
+   END IF
 !-------------------------------------------------------------------------------
 ! Total Fluxes from Urban Canopy
 !-------------------------------------------------------------------------------
@@ -3022,6 +3081,11 @@ ENDIF
  endif
  
 
+   ! urban-nbs (GitHub issue #2379): URBPARM tables that predate WRF 4.8 do not contain the
+   ! Urban-NbS keys; give the selectors safe defaults before the table is parsed
+   TREEOPTION = 0
+   TTscheme   = 0
+
    READLOOP : do 
       read(11,'(A512)', iostat=iostatus) string
       if (iostatus /= 0) exit READLOOP
@@ -3198,6 +3262,21 @@ ENDIF
          height_bin_tbl = -1.E36
          hpercent_bin_tbl = -1.E36
 !end BEP
+         ! urban-nbs (GitHub issue #2379): seed the Urban-NbS arrays with the default URBPARM.TBL
+         ! values so they are never undefined if the table lacks these keys
+         FVG_TBL      = 0.2
+         RTREE_TBL    = 0.0      ! tree geometry has no category-independent default
+         HTREE_TBL    = 0.0
+         DTREE_TBL    = 0.0
+         LAI_TREE_TBL = 2.0
+         LAI_VEG_TBL  = 2.0
+         Z0VG_TBL     = 0.01
+         Z0HVG_TBL    = 0.001
+         CAPVG_TBL    = 1.3E6 * ( 1.0 / 4.1868 ) * 1.E-6   ! already in cal cm{-3} deg{-1}
+         EPSVG_TBL    = 0.93
+         EPST_TBL     = 0.9
+         ALBVG_TBL    = 0.2
+         ALBT_TBL     = 0.15
 
       else if (name == "ZR") then
          read(string(indx+1:),*) zr_tbl(1:icate)
@@ -3510,6 +3589,18 @@ ENDIF
      VFGS=1.-2.*VFWS*HGT_TBL(LC)/RW_TBL(LC)
      SVF_TBL(LC)=VFGS
    END DO
+
+   ! urban-nbs: configurations that would run with undefined values
+   IF (SF_URBAN_PHYSICS == 1 .AND. TREEOPTION == 1) THEN
+      ! #2379: tree geometry missing from URBPARM.TBL (e.g., a table older than WRF 4.8)
+      IF (ANY(RTREE_TBL(1:ICATE) <= 0.0)) THEN
+         FATAL_ERROR('URBPARM.TBL: TREEOPTION=1 requires the Urban-NbS tree parameters (RTREE HTREE DTREE etc.)')
+      END IF
+      ! the force-restore Urban-NbS branch uses variables that are never computed
+      IF (TS_SCHEME_DATA /= 1) THEN
+         FATAL_ERROR('URBPARM.TBL: TREEOPTION=1 requires TS_SCHEME=1 (force-restore is not supported for Urban-NbS)')
+      END IF
+   END IF
 
    deallocate(roof_width)
    deallocate(road_width)
@@ -5220,19 +5311,25 @@ FUNCTION kanda_kawai_svf(lp, lf) RESULT (svf)
       REAL(kind=RKIND), INTENT(IN)    :: XI , H, W, HTREE, RTREE, DTREE
       REAL(kind=RKIND), INTENT(OUT)   :: CHI_SHADED, ETA_SHADED, CHI_SHADED_TREE, ETA_SHADED_TREE
       REAL(kind=RKIND)                :: XI_A, XI_B, X0, Y0, X1, X2, Y1, Y2, CHI_TREE, ETA_TREE
+      REAL(kind=RKIND)                :: XIL
+      REAL(kind=RKIND), PARAMETER     :: XI_MIN = 1.E-6   ! XI -> 0 (sun at zenith): no wall shadow, tree shadow = crown diameter
       ! CHI: SHADOW ON THE GROUND;        ETA: SHADOW ON THE WALL
 
-      XI_A = SQRT(1 + XI**2)
-      XI_B = SQRT(1 + XI**(-2))
+      ! urban-nbs bugfix: XI = 0 (e.g., COSZ = 1) gave divisions by zero and Inf-Inf = NaN below.
+      ! With XI >= XI_MIN the expressions reproduce the analytical zenith limit
+      ! (X0=W, Y0=Y1=Y2=0, X1/X2=DTREE-/+RTREE) to within O(XI_MIN).
+      XIL  = MAX(XI, XI_MIN)
+      XI_A = SQRT(1 + XIL**2)
+      XI_B = SQRT(1 + XIL**(-2))
 
-      X0 = MAX(0.0, W - H * XI) 
-      Y0 = MAX(0.0, H - W / XI) 
+      X0 = MAX(0.0, W - H * XIL)
+      Y0 = MAX(0.0, H - W / XIL)
 
-      X1 = MAX(0.0, DTREE - HTREE * XI - RTREE * XI_A)
-      X2 = MAX(0.0, DTREE - HTREE * XI + RTREE * XI_A)
+      X1 = MAX(0.0, DTREE - HTREE * XIL - RTREE * XI_A)
+      X2 = MAX(0.0, DTREE - HTREE * XIL + RTREE * XI_A)
 
-      Y1 = MAX(0.0, HTREE - DTREE / XI - RTREE * XI_B)
-      Y2 = MAX(0.0, HTREE - DTREE / XI + RTREE * XI_B)
+      Y1 = MAX(0.0, HTREE - DTREE / XIL - RTREE * XI_B)
+      Y2 = MAX(0.0, HTREE - DTREE / XIL + RTREE * XI_B)
 
       CHI_TREE = X2 - X1 
       ETA_TREE = Y2 - Y1 
@@ -5650,5 +5747,34 @@ FUNCTION kanda_kawai_svf(lp, lf) RESULT (svf)
    ! ----------------------------------------------------------------------
    END SUBROUTINE VF_TREE_ANALYTICAL
    ! ----------------------------------------------------------------------
+
+!===============================================================================
+! URB_LIMIT_DT / URB_CLAMP_TS: Newton-step and temperature safeguards shared by
+! the roof, green-roof, wall/road and Urban-NbS solvers (GitHub issue #2380).
+! Non-finite corrections are discarded; finite ones are capped at URB_DTS_MAX.
+!===============================================================================
+   ELEMENTAL FUNCTION URB_LIMIT_DT(DT) RESULT(DTL)
+      REAL(kind=RKIND), INTENT(IN) :: DT
+      REAL(kind=RKIND)             :: DTL
+      IF (ABS(DT) <= URB_DTS_MAX) THEN
+         DTL = DT
+      ELSE IF (ABS(DT) > URB_DTS_MAX) THEN    ! includes +/-Inf
+         DTL = SIGN(URB_DTS_MAX, DT)
+      ELSE                                    ! NaN: no update
+         DTL = 0.0
+      END IF
+   END FUNCTION URB_LIMIT_DT
+
+   ELEMENTAL FUNCTION URB_CLAMP_TS(T) RESULT(TL)
+      REAL(kind=RKIND), INTENT(IN) :: T
+      REAL(kind=RKIND)             :: TL
+      IF (T > URB_TS_MAX) THEN
+         TL = URB_TS_MAX
+      ELSE IF (T >= URB_TS_MIN) THEN
+         TL = T
+      ELSE                                    ! below range (or NaN)
+         TL = URB_TS_MIN
+      END IF
+   END FUNCTION URB_CLAMP_TS
 
 END MODULE module_sf_urban
