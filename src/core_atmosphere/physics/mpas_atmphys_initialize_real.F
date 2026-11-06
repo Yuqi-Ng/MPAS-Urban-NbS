@@ -566,57 +566,50 @@
 
  !Split WUDAPT/NUDAPT Urban Parameters
  isurban_beg = 50   ! LCZ number starts from 51 to 61
- if (config_urban_static .and. config_slucm_distributed_drag) then
+ if (config_slucm_distributed_drag) then
     do iCell = 1, nCellsSolve
        if ((ivgtyp(iCell) == isurban_lu) .or. (ivgtyp(iCell) > isurban_beg)) then
           frc_urb2d(iCell) = max(0.1,min(0.9,1.0 - sum(greenfrac(:,iCell))/12.0/100.0))
        endif
     enddo 
- else
-    if (config_urban_static) then
-       do iCell = 1, nCellsSolve
-          if ((mminlu == 'NLCD40') .or. (mminlu == 'MODIFIED_IGBP_MODIS_NOAH')) then
-             if ((frc_urb2d(iCell)>=0.5) .and. &
-                 (ivgtyp(iCell) .ne. 13 .and. ivgtyp(iCell) .ne. 24 .and. ivgtyp(iCell) .ne. 25 .and. &
-                  ivgtyp(iCell) .ne. 26 .and. ivgtyp(iCell) <= isurban_beg) ) then
-                ivgtyp(iCell) = 13
-             endif
-          elseif (mminlu == 'USGS') then
-             if ((frc_urb2d(iCell)>=0.5) .and. &
-                 (ivgtyp(iCell) .ne. 1 .and. ivgtyp(iCell) <= isurban_beg) ) then
-                ivgtyp(iCell) = 1
-             endif             
-          endif
+ endif
 
-          !frc_urb2d set to urban table value in urban_var_init subroutine, so below is not needed
-          !if (frc_urb2d(iCell) == 0.0) then
-          !   if ( (mminlu == 'NLCD40' .or. mminlu == 'MODIFIED_IGBP_MODIS_NOAH') .and. &
-          !       (ivgtyp(iCell)==24 .or. ivgtyp(iCell)==25 .or. ivgtyp(iCell)==26 .or. &
-          !        ivgtyp(iCell)==13) ) then
-          !      frc_urb2d(iCell) = 0.9
-          !   endif
-          !   if (mminlu == 'USGS' .and. ivgtyp(iCell)==1 ) frc_urb2d(iCell) = 0.9
-          !endif
-          lp_urb2d(iCell)  = urb_param(91,iCell)
-          lb_urb2d(iCell)  = urb_param(95,iCell)
-          hgt_urb2d(iCell) = urb_param(94,iCell)
-       enddo
-    endif  ! config_urban_static
-
-    if (config_urban_static) then
-       do iCell = 1, nCellsSolve
-          mh_urb2d(iCell)   = urb_param(92,iCell)
-          stdh_urb2d(iCell) = urb_param(93,iCell)
-          lf_urb2d(1,iCell) = urb_param(96,iCell)
-          lf_urb2d(2,iCell) = urb_param(97,iCell)
-          lf_urb2d(3,iCell) = urb_param(98,iCell)
-          lf_urb2d(4,iCell) = urb_param(99,iCell)
-       enddo
+ do iCell = 1, nCellsSolve
+    if ((mminlu == 'NLCD40') .or. (mminlu == 'MODIFIED_IGBP_MODIS_NOAH')) then
+       if ((frc_urb2d(iCell)>=0.5) .and. &
+           (ivgtyp(iCell) .ne. 13 .and. ivgtyp(iCell) .ne. 24 .and. ivgtyp(iCell) .ne. 25 .and. &
+            ivgtyp(iCell) .ne. 26 .and. ivgtyp(iCell) <= isurban_beg) ) then
+          ivgtyp(iCell) = 13
+       endif
+    elseif (mminlu == 'USGS') then
+       if ((frc_urb2d(iCell)>=0.5) .and. &
+           (ivgtyp(iCell) .ne. 1 .and. ivgtyp(iCell) <= isurban_beg) ) then
+          ivgtyp(iCell) = 1
+       endif             
     endif
 
- endif ! split URB_PARAM matrix
+    !frc_urb2d set to urban table value in urban_var_init subroutine, so below is not needed
+    !if (frc_urb2d(iCell) == 0.0) then
+    !   if ( (mminlu == 'NLCD40' .or. mminlu == 'MODIFIED_IGBP_MODIS_NOAH') .and. &
+    !       (ivgtyp(iCell)==24 .or. ivgtyp(iCell)==25 .or. ivgtyp(iCell)==26 .or. &
+    !        ivgtyp(iCell)==13) ) then
+    !      frc_urb2d(iCell) = 0.9
+    !   endif
+    !   if (mminlu == 'USGS' .and. ivgtyp(iCell)==1 ) frc_urb2d(iCell) = 0.9
+    !endif
 
- endif !config_urban_static
+    lp_urb2d(iCell)   = urb_param(91,iCell)
+    lb_urb2d(iCell)   = urb_param(95,iCell)
+    hgt_urb2d(iCell)  = urb_param(94,iCell)
+    mh_urb2d(iCell)   = urb_param(92,iCell)
+    stdh_urb2d(iCell) = urb_param(93,iCell)
+    lf_urb2d(1,iCell) = urb_param(96,iCell)
+    lf_urb2d(2,iCell) = urb_param(97,iCell)
+    lf_urb2d(3,iCell) = urb_param(98,iCell)
+    lf_urb2d(4,iCell) = urb_param(99,iCell)
+ enddo
+
+ endif ! config_urban_static
 
  end subroutine init_urban_param
 
